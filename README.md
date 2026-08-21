@@ -2,7 +2,7 @@
 
 YOLO-EdgeBench is an experimental framework for evaluating YOLO inference performance and resource utilization on edge computing platforms.
 
-The current implementation evaluates five YOLO workloads on NVIDIA Jetson platforms. It supports concurrent execution with NVIDIA Multi-Process Service (MPS), system and per-workload resource monitoring, and CUDA execution profiling with NVIDIA Nsight Systems.
+The current implementation evaluates five YOLO workloads on NVIDIA Jetson platforms. It supports concurrent workload execution using NVIDIA Multi-Process Service (MPS), system and per-workload resource monitoring, and CUDA execution profiling using NVIDIA Nsight Systems.
 
 ## 1. Workloads
 
@@ -16,26 +16,24 @@ The following five YOLO workloads are evaluated:
 | Segmentation | `segmentation.py` | `yolo26n-seg.engine` |
 | Oriented Bounding Box (OBB) | `obb.py` | `yolo26n-obb.engine` |
 
-Each workload reports the following timing information:
+Each workload records per-image:
 
 - preprocessing time
 - inference time
 - postprocessing time
-- processing time (`preprocess + inference + postprocess`)
-- total wall-clock time
-- average wall-clock time per image
+- total processing time (`preprocess + inference + postprocess`)
+
+The workload scripts also report the total wall-clock time and average wall-clock time per image.
 
 ## 2. Evaluation Platforms
 
-The experiments are currently designed for NVIDIA Jetson platforms, including:
+The experiments are currently conducted on the following NVIDIA Jetson platforms:
 
 - NVIDIA Jetson AGX Orin
 - NVIDIA Jetson Orin NX
 - NVIDIA Jetson Orin Nano
 
-The framework can be extended to additional edge computing platforms by adapting the execution and resource-monitoring scripts.
-
-## 3. Software Environment
+## 3. Requirements
 
 The current experimental environment uses:
 
@@ -51,98 +49,47 @@ The current experimental environment uses:
 - `tegrastats`
 - Python 3
 
-The Docker image used to execute the YOLO workloads is:
+The Docker image used for the YOLO workloads is:
 
 ```bash
 ultralytics/ultralytics:latest-jetson-jetpack6
 ```
 
-The current scripts mount the host installation of NVIDIA Nsight Systems 2024.5.4 into the Docker containers.
+The current experiment scripts use NVIDIA Nsight Systems 2024.5.4 installed on the host and mount it into the workload containers.
 
 ## 4. Repository Structure
 
 ```text
 YOLO-EdgeBench/
-├── classification.py
-├── detection.py
-├── estimation.py
-├── segmentation.py
-├── obb.py
-├── run_all_mps_nsys.sh
-├── run_isolated_nsight.sh
-├── parse_logs.py
-├── plot_graphs.py
+├── classification.py          # YOLO classification workload
+├── detection.py               # YOLO object detection workload
+├── estimation.py              # YOLO pose estimation workload
+├── segmentation.py            # YOLO segmentation workload
+├── obb.py                     # YOLO oriented bounding box workload
+├── run_all_mps_nsys.sh        # Concurrent execution with MPS and profiling
+├── run_isolated_nsight.sh     # Isolated Nsight Systems profiling
+├── parse_logs.py              # Parse experiment logs into Excel
+├── plot_graphs.py             # Generate plots from parsed results
 └── README.md
 ```
 
-### Workload Scripts
+## 5. Setup
 
-`classification.py`, `detection.py`, `estimation.py`, `segmentation.py`, and `obb.py` execute the corresponding TensorRT YOLO models and record per-image processing times.
+### Input Images
 
-### `run_all_mps_nsys.sh`
+The workload scripts use image datasets stored in the corresponding input directories. Make sure that the paths in each workload script match the local dataset locations before running the experiment.
 
-Runs all five workloads concurrently in separate Docker containers.
-
-The script:
-
-- requires NVIDIA MPS to be running before the experiment,
-- launches the five workloads concurrently,
-- synchronizes their start time,
-- sets `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=20` for each workload,
-- enables per-context multiprocessor partitioning,
-- collects per-workload CPU and memory measurements using `pidstat`,
-- collects system-level CPU, GPU, and memory measurements using `tegrastats`, and
-- profiles CUDA execution using NVIDIA Nsight Systems.
-
-Nsight Systems collects:
-
-```bash
---trace=cuda,nvtx,osrt
-```
-
-A separate `.nsys-rep` report is generated for each workload.
-
-### `run_isolated_nsight.sh`
-
-Runs each workload individually with MPS disabled and Nsight Systems enabled.
-
-This script is intended for isolated workload profiling without interference from the other YOLO workloads. It also collects `pidstat` and `tegrastats` measurements and generates Nsight Systems reports and CUDA summary files.
-
-### `parse_logs.py`
-
-Parses the logs produced by the concurrent experiment and creates:
+The current scripts use directories such as:
 
 ```text
-all_logs/parsed_logs_all.xlsx
+imagenet_images/
+coco_images/
+dota_images/
 ```
 
-The generated workbook contains:
+### TensorRT Engines
 
-- `Inference_Time`: per-image inference times for each workload
-- `Processing_Time`: preprocessing, inference, postprocessing, and processing-total times
-- `Tegrastats`: system-level CPU, GPU, and memory measurements
-- workload-specific `pidstat` sheets: per-workload CPU and memory measurements
-
-### `plot_graphs.py`
-
-Reads `parsed_logs_all.xlsx` and generates plots for:
-
-- inference time per workload
-- system-level CPU, GPU, and memory utilization
-- per-workload CPU utilization
-- per-workload memory usage
-
-## 5. Input Data
-
-The current workload scripts expect the following image directories:
-
-```text
-imagenet_images/    # Classification
-coco_images/        # Detection and Pose Estimation
-dota_images/        # Segmentation and OBB
-```
-
-The corresponding TensorRT engine files must also be placed in the repository directory:
+Place the required TensorRT engine files in the directory expected by the workload scripts:
 
 ```text
 yolo26n-cls.engine
@@ -152,17 +99,15 @@ yolo26n-seg.engine
 yolo26n-obb.engine
 ```
 
-TensorRT engine files are platform dependent. Engines should therefore be generated for the target Jetson platform and software environment.
+TensorRT engine files are dependent on the target hardware and software environment. Engines should therefore be generated for the corresponding Jetson platform and TensorRT environment.
 
-## 6. Concurrent Experiment with MPS
+## 6. Running the Experiments
 
-### 6.1 Start NVIDIA MPS
+### 6.1 Concurrent Execution with MPS
 
-NVIDIA MPS must be running before executing `run_all_mps_nsys.sh`.
+`run_all_mps_nsys.sh` executes all five YOLO workloads concurrently in separate Docker containers.
 
-The experiment script checks whether the MPS control process is running and terminates if MPS is not available.
-
-### 6.2 Run the Concurrent Experiment
+Before running the experiment, NVIDIA MPS must be running.
 
 Make the script executable:
 
@@ -170,85 +115,79 @@ Make the script executable:
 chmod +x run_all_mps_nsys.sh
 ```
 
-Run:
+Then run:
 
 ```bash
 ./run_all_mps_nsys.sh
 ```
 
-Five Docker containers are launched concurrently:
+The script launches the following five workloads concurrently:
 
 ```text
-detection
-classification
-estimation
-segmentation
-obb
+Classification
+Detection
+Pose Estimation
+Segmentation
+OBB
 ```
 
-Each workload is configured with:
+The workloads are synchronized to start at approximately the same time.
+
+For the five-workload experiment, each workload is configured with:
 
 ```bash
 CUDA_MPS_ENABLE_PER_CTX_DEVICE_MULTIPROCESSOR_PARTITIONING=1
 CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=20
 ```
 
-The workloads wait for a common target time before execution so that their execution starts approximately simultaneously.
+The current experiment applies the same 20% active-thread setting to each of the five CUDA contexts. This setting limits the portion of available CUDA execution resources that each context can use through MPS; it does not represent a fixed physical partition of 20% of the entire GPU.
 
-## 7. Parse Experimental Results
+During execution, the script collects:
 
-After the concurrent experiment finishes, run:
+- per-workload CPU utilization using `pidstat`
+- per-workload memory usage using `pidstat`
+- system-level CPU utilization using `tegrastats`
+- system-level GPU utilization using `tegrastats`
+- system-level memory usage using `tegrastats`
+- CUDA execution traces using NVIDIA Nsight Systems
 
-```bash
-python3 parse_logs.py
-```
-
-The parser reads the workload logs, `pidstat` logs, and `tegrastats` log and generates:
-
-```text
-all_logs/parsed_logs_all.xlsx
-```
-
-The basic data-processing flow is:
-
-```text
-run_all_mps_nsys.sh
-        │
-        ├── workload logs
-        ├── pidstat logs
-        ├── tegrastats log
-        └── Nsight Systems reports
-                 │
-                 ▼
-           parse_logs.py
-                 │
-                 ▼
-       parsed_logs_all.xlsx
-```
-
-## 8. Generate Graphs
-
-After generating `parsed_logs_all.xlsx`, run:
+Nsight Systems profiles each workload using:
 
 ```bash
-python3 plot_graphs.py
+--trace=cuda,nvtx,osrt
 ```
 
-The following figures are generated in `all_logs/`:
+A separate `.nsys-rep` file is generated for each workload.
+
+### 6.2 Isolated Nsight Systems Profiling
+
+`run_isolated_nsight.sh` is used to profile each workload individually without concurrent YOLO workloads.
+
+Run:
+
+```bash
+chmod +x run_isolated_nsight.sh
+./run_isolated_nsight.sh
+```
+
+The script first disables NVIDIA MPS and verifies that no MPS control or server process remains. The five workloads are then executed sequentially, one at a time, with Nsight Systems enabled. This provides isolated profiling results that can be compared with concurrent execution.
+
+The isolated results are stored separately under:
 
 ```text
-inference_plot.png
-tegrastats_boxplot.png
-workload_boxplot.png
+isolated_logs/
 ```
 
-The complete workflow is therefore:
+## 7. Processing and Visualizing Results
+
+For the concurrent experiment, the main result-processing workflow is:
 
 ```text
 ./run_all_mps_nsys.sh
           │
           ▼
-       Raw logs
+   Raw experiment logs
+   + Nsight reports
           │
           ▼
  python3 parse_logs.py
@@ -263,62 +202,102 @@ python3 plot_graphs.py
        PNG plots
 ```
 
-## 9. Collected Metrics
+### 7.1 Parse Logs
 
-### Per-Image Processing Time
+After `run_all_mps_nsys.sh` finishes, run:
 
-Each YOLO workload records:
-
-```text
-preprocess
-inference
-postprocess
-processing_total
+```bash
+python3 parse_logs.py
 ```
 
-where:
+The script parses the workload, `pidstat`, and `tegrastats` logs and generates:
 
 ```text
-processing_total = preprocess + inference + postprocess
+all_logs/parsed_logs_all.xlsx
 ```
 
-The scripts additionally measure the wall-clock time surrounding the complete model execution:
+The workbook contains the following data:
+
+- `Inference_Time`: per-image inference time for each workload
+- `Processing_Time`: preprocessing, inference, postprocessing, and total processing time
+- `Tegrastats`: system-level CPU, GPU, and memory measurements
+- workload-specific `pidstat` sheets: per-workload CPU and memory measurements
+
+### 7.2 Generate Graphs
+
+After generating `parsed_logs_all.xlsx`, run:
+
+```bash
+python3 plot_graphs.py
+```
+
+The script generates:
 
 ```text
-Total wall-clock time
-Average wall-clock time per image
+all_logs/inference_plot.png
+all_logs/tegrastats_boxplot.png
+all_logs/workload_boxplot.png
 ```
 
-The processing total and wall-clock time represent different measurements. The processing total is calculated from the timing components reported by Ultralytics, whereas the wall-clock measurement includes the elapsed time observed around the complete model call.
+These plots visualize inference time and system/per-workload resource utilization.
 
-### Per-Workload Resource Usage
+## 8. Collected Metrics and Output
 
-`pidstat` is used to collect:
+### Timing Metrics
+
+For each image, each workload records preprocessing, inference, and postprocessing times, along with their sum as the total processing time:
+
+```text
+Preprocessing
+     +
+Inference
+     +
+Postprocessing
+     =
+Total Processing Time
+```
+
+The workload scripts additionally measure the wall-clock time of the complete model execution.
+
+Therefore, the following timing measurements are available:
+
+- **Preprocessing time**: preprocessing time reported for each image
+- **Inference time**: inference time reported for each image
+- **Postprocessing time**: postprocessing time reported for each image
+- **Total processing time**: sum of preprocessing, inference, and postprocessing times for each image
+- **Total wall-clock time**: elapsed time of the complete model execution
+- **Average wall-clock time**: total wall-clock time divided by the number of processed images
+
+The reported processing time and measured wall-clock time cover different execution scopes and therefore can differ.
+
+### Resource Metrics
+
+`pidstat` provides workload-specific measurements, including:
 
 - CPU utilization
 - resident memory usage (RSS)
 
-for each workload process.
-
-### System-Level Resource Usage
-
-`tegrastats` is used to collect:
+`tegrastats` provides system-level measurements, including:
 
 - CPU utilization
 - GPU utilization
 - RAM usage
 
-for the overall Jetson system.
+### Nsight Systems Profiles
 
-### CUDA Execution
+NVIDIA Nsight Systems generates a separate profiling report for each workload:
 
-NVIDIA Nsight Systems is used to collect CUDA execution traces for each workload.
+```text
+nsys_classification.nsys-rep
+nsys_detection.nsys-rep
+nsys_estimation.nsys-rep
+nsys_segmentation.nsys-rep
+nsys_obb.nsys-rep
+```
 
-The profiler records CUDA, NVTX, and OS runtime activity and produces a separate `.nsys-rep` file for each workload.
+These files can be opened using NVIDIA Nsight Systems for timeline-based analysis of CUDA execution and runtime behavior.
 
-## 10. Output Files
-
-A typical concurrent experiment produces:
+A typical concurrent experiment produces files such as:
 
 ```text
 all_logs/
@@ -349,76 +328,11 @@ all_logs/
 └── workload_boxplot.png
 ```
 
-The `.log` files contain workload and resource-monitoring results, while the `.nsys-rep` files can be opened with NVIDIA Nsight Systems for detailed timeline analysis.
+## 9. Notes
 
-## 11. Isolated Nsight Systems Profiling
-
-To profile workloads individually rather than concurrently, use:
-
-```bash
-chmod +x run_isolated_nsight.sh
-./run_isolated_nsight.sh
-```
-
-This experiment disables NVIDIA MPS and executes the workloads sequentially:
-
-```text
-Detection
-    ↓
-Classification
-    ↓
-Pose Estimation
-    ↓
-Segmentation
-    ↓
-OBB
-```
-
-The isolated results are stored separately under:
-
-```text
-isolated_logs/
-```
-
-Nsight Systems reports and CUDA summary files are stored under:
-
-```text
-isolated_logs/nsys/
-```
-
-This allows the CUDA behavior of each workload during isolated execution to be compared with its behavior during concurrent execution.
-
-## 12. Experimental Workflow
-
-The repository supports two main execution modes:
-
-```text
-                    YOLO-EdgeBench
-                         │
-            ┌────────────┴────────────┐
-            │                         │
-            ▼                         ▼
-     Concurrent Execution       Isolated Execution
-    run_all_mps_nsys.sh       run_isolated_nsight.sh
-            │                         │
-         MPS ON                    MPS OFF
-       5 workloads              1 workload
-       concurrently             at a time
-            │                         │
-       Nsight Systems             Nsight Systems
-       pidstat                    pidstat
-       tegrastats                 tegrastats
-            │                         │
-            ▼                         ▼
-        all_logs/              isolated_logs/
-```
-
-The concurrent experiment is used to evaluate multi-workload execution and resource sharing, while the isolated experiment provides a baseline for analyzing the execution characteristics of each workload without concurrent GPU workloads.
-
-## 13. Notes
-
-- TensorRT engine files are hardware- and software-environment dependent and may need to be regenerated for each Jetson platform.
-- The current MPS experiment assigns an active thread percentage of 20 to each of the five concurrent workloads.
-- Nsight Systems reports are generated separately for each workload because each workload is launched as an independent profiling target.
-- `tegrastats` measures system-level resource utilization, whereas `pidstat` measures the resource usage of individual workload processes.
-- Profiling introduces measurement overhead. Nsight Systems results should therefore be interpreted primarily as execution-trace and profiling data rather than assuming that profiling has no effect on execution time.
+- The current concurrent experiment executes five YOLO workloads and uses `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=20` for each workload.
+- The MPS active thread percentage controls the execution resources available to a CUDA context; it should not be interpreted simply as allocating a fixed 20% portion of the entire GPU to each workload.
+- Nsight Systems reports are generated separately because each workload is executed as an independent profiling target.
+- `pidstat` measures resource usage for individual workload processes, whereas `tegrastats` measures system-level resource utilization.
+- Nsight Systems profiling introduces measurement overhead. Profiling results are primarily intended for analyzing CUDA execution behavior and should be interpreted with this overhead in mind.
+- TensorRT engine files should be regenerated for the target Jetson platform and TensorRT environment when the hardware or software environment changes.
