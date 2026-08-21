@@ -1,6 +1,6 @@
 #!/bin/bash
 
-ROOT="/home/orin/yolo"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE="ultralytics/ultralytics:latest-jetson-jetpack6"
 PIPE="/tmp/nvidia-mps"
 MPSLOG="/tmp/nvidia-log"

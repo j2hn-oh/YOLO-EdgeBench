@@ -2,8 +2,10 @@ import os
 import re
 import pandas as pd
 import io
+from pathlib import Path
 
-LOG_DIR = "/home/orin/yolo/all_logs"
+ROOT = Path(__file__).resolve().parent
+LOG_DIR = ROOT / "all_logs"
 TASKS = ["detection", "classification", "estimation", "segmentation", "obb"]
 EXCEL_OUT = os.path.join(LOG_DIR, "parsed_logs_all.xlsx")
 
