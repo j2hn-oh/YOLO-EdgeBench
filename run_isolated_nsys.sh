@@ -101,7 +101,6 @@ echo "[INFO] Cleaning previous logs..."
 for NAME in "${WORKLOADS[@]}"; do
     rm -f "$LOG_DIR/${NAME}.log"
     rm -f "$LOG_DIR/pidstat_${NAME}.log"
-    rm -f "$LOG_DIR/${NAME}_per_image_timing.csv"
 done
 
 rm -f "$LOG_DIR/all_tegrastat.log"
@@ -141,92 +140,6 @@ sudo tegrastats \
     >/dev/null 2>&1 &
 
 TEGRA_PID=$!
-
-extract_per_image_timing()
-{
-    local NAME="$1"
-    local LOG_FILE="$LOG_DIR/${NAME}.log"
-    local CSV_FILE="$LOG_DIR/${NAME}_per_image_timing.csv"
-
-    python3 - \
-        "$LOG_FILE" \
-        "$CSV_FILE" \
-        "$NAME" <<'PY'
-
-import csv
-import re
-import sys
-from pathlib import Path
-
-log_file = Path(sys.argv[1])
-csv_file = Path(sys.argv[2])
-task = sys.argv[3]
-
-ansi = re.compile(r"\x1b\[[0-9;]*m")
-
-pattern = re.compile(
-    r"Image\s+(\d+)"
-    r"(?:\s+\((.*?)\))?"
-    r"\s*:\s*"
-    r"preprocess=([\d.]+)\s*ms,\s*"
-    r"inference=([\d.]+)\s*ms,\s*"
-    r"postprocess=([\d.]+)\s*ms"
-    r"(?:,\s*"
-    r"(?:processing_total|total)="
-    r"([\d.]+)\s*ms"
-    r")?",
-    re.IGNORECASE
-)
-
-if not log_file.exists():
-    print(f"[WARNING] {task}: log file not found")
-    sys.exit(0)
-
-text = log_file.read_text(errors="ignore")
-text = ansi.sub("", text)
-
-matches = pattern.findall(text)
-
-with csv_file.open("w", newline="") as f:
-    writer = csv.writer(f)
-
-    writer.writerow([
-        "image_index",
-        "image_name",
-        "preprocess_ms",
-        "inference_ms",
-        "postprocess_ms",
-        "processing_total_ms",
-    ])
-
-    for (
-        image_index,
-        image_name,
-        preprocess,
-        inference,
-        postprocess,
-        total
-    ) in matches:
-
-        preprocess = float(preprocess)
-        inference = float(inference)
-        postprocess = float(postprocess)
-
-        if total:
-            total = float(total)
-        else:
-            total = preprocess + inference + postprocess
-
-        writer.writerow([
-            int(image_index),
-            image_name,
-            f"{preprocess:.6f}",
-            f"{inference:.6f}",
-            f"{postprocess:.6f}",
-            f"{total:.6f}",
-        ])
-PY
-}
 
 run_workload()
 {
@@ -366,7 +279,14 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
         PIDSTAT_PID=""
     fi
 
-    extract_per_image_timing "$NAME"
+    # workload 실패 시 Nsight 후처리를 수행하지 않음
+    if [ "$EXIT_STATUS" -ne 0 ]; then
+        stty sane 2>/dev/null || true
+        echo "[ERROR] $NAME failed (exit status=$EXIT_STATUS)"
+        CURRENT_CONTAINER=""
+        sleep "$COOLDOWN"
+        return
+    fi
 
     NSYS_REP="$LOG_DIR/nsys/${NAME}.nsys-rep"
 
@@ -487,11 +407,6 @@ echo "$LOG_DIR"
 echo
 echo "Run parser:"
 echo "python3 parse_logs.py"
-echo
-echo "Per-image timing CSV:"
-for NAME in "${WORKLOADS[@]}"; do
-    echo "$LOG_DIR/${NAME}_per_image_timing.csv"
-done
 echo
 echo "Nsight:"
 echo "$LOG_DIR/nsys/"
