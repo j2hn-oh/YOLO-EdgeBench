@@ -16,6 +16,8 @@ The following five YOLO workloads are evaluated:
 | Segmentation | `segmentation.py` | `yolo26n-seg.engine` |
 | Oriented Bounding Box (OBB) | `obb.py` | `yolo26n-obb.engine` |
 
+The `.pt` models are converted to TensorRT engines on the target Jetson platform before running the experiments.
+
 Each workload records per-image:
 
 - preprocessing time
@@ -61,13 +63,23 @@ The current experiment scripts use NVIDIA Nsight Systems 2024.5.4 installed on t
 
 ```text
 YOLO-EdgeBench/
+├── coco_images/               # Input images for detection, pose, and segmentation
+├── dota_images/               # Input images for OBB
+├── imagenet_images/           # Input images for classification
+├── models/                    # YOLO .pt models and generated TensorRT engines
+│   ├── yolo26n.pt
+│   ├── yolo26n-cls.pt
+│   ├── yolo26n-pose.pt
+│   ├── yolo26n-seg.pt
+│   └── yolo26n-obb.pt
 ├── classification.py          # YOLO classification workload
 ├── detection.py               # YOLO object detection workload
 ├── estimation.py              # YOLO pose estimation workload
 ├── segmentation.py            # YOLO segmentation workload
 ├── obb.py                     # YOLO oriented bounding box workload
-├── run_all_mps_nsys.sh        # Concurrent execution with MPS and profiling
-├── run_isolated_nsight.sh     # Isolated Nsight Systems profiling
+├── pt_to_trt.py               # Convert YOLO .pt models to TensorRT engines
+├── run_all_mps_nsys.sh        # Concurrent execution with MPS and Nsight profiling
+├── run_isolated_nsys.sh       # Isolated execution with Nsight profiling
 ├── parse_logs.py              # Parse experiment logs into Excel
 ├── plot_graphs.py             # Generate plots from parsed results
 └── README.md
@@ -75,31 +87,69 @@ YOLO-EdgeBench/
 
 ## 5. Setup
 
-### Input Images
+### 5.1 Clone the Repository
 
-The workload scripts use image datasets stored in the corresponding input directories. Make sure that the paths in each workload script match the local dataset locations before running the experiment.
+Clone the repository and move to the repository directory:
 
-The current scripts use directories such as:
+```bash
+git clone <repository-url>
+cd YOLO-EdgeBench
+```
+
+### 5.2 Input Images
+
+The repository contains the input image directories used by the five workloads:
 
 ```text
-imagenet_images/
 coco_images/
 dota_images/
+imagenet_images/
 ```
 
-### TensorRT Engines
+The workloads use these image sets as follows:
 
-Place the required TensorRT engine files in the directory expected by the workload scripts:
+| Workload | Input Directory |
+|---|---|
+| Classification | `imagenet_images/` |
+| Object Detection | `coco_images/` |
+| Pose Estimation | `coco_images/` |
+| Segmentation | `coco_images/` |
+| OBB | `dota_images/` |
+
+### 5.3 Generate TensorRT Engines
+
+The `models/` directory contains the YOLO `.pt` models used to generate TensorRT engines.
+
+Because TensorRT engines depend on the target hardware and TensorRT environment, generate the engines directly on each target Jetson platform.
+
+Run `pt_to_trt.py` using the same Docker image used for the workloads:
+
+```bash
+docker run --rm \
+    --runtime=nvidia \
+    --gpus=all \
+    -v "$(pwd):/home" \
+    ultralytics/ultralytics:latest-jetson-jetpack6 \
+    /bin/bash -lc "cd /home && python3 pt_to_trt.py"
+```
+
+After conversion, the `models/` directory contains:
 
 ```text
-yolo26n-cls.engine
-yolo26n.engine
-yolo26n-pose.engine
-yolo26n-seg.engine
-yolo26n-obb.engine
+models/
+├── yolo26n.pt
+├── yolo26n.engine
+├── yolo26n-cls.pt
+├── yolo26n-cls.engine
+├── yolo26n-pose.pt
+├── yolo26n-pose.engine
+├── yolo26n-seg.pt
+├── yolo26n-seg.engine
+├── yolo26n-obb.pt
+└── yolo26n-obb.engine
 ```
 
-TensorRT engine files are dependent on the target hardware and software environment. Engines should therefore be generated for the corresponding Jetson platform and TensorRT environment.
+The generated `.engine` files are used by the workload scripts.
 
 ## 6. Running the Experiments
 
@@ -180,43 +230,56 @@ isolated_logs/
 
 ## 7. Processing and Visualizing Results
 
-For the concurrent experiment, the main result-processing workflow is:
+The result-processing workflow is:
 
 ```text
+Concurrent experiment
 ./run_all_mps_nsys.sh
           │
           ▼
-   Raw experiment logs
-   + Nsight reports
+      all_logs/
+          │
+          ├── Workload logs
+          ├── pidstat logs
+          ├── tegrastats log
+          └── Nsight trace data
           │
           ▼
- python3 parse_logs.py
+   python3 parse_logs.py
           │
           ▼
  parsed_logs_all.xlsx
           │
           ▼
-python3 plot_graphs.py
+  python3 plot_graphs.py
           │
           ▼
        PNG plots
 ```
 
+The same processing scripts also process results collected under `isolated_logs/`.
+
 ### 7.1 Parse Logs
 
-After `run_all_mps_nsys.sh` finishes, run:
+After running the experiments, execute:
 
 ```bash
 python3 parse_logs.py
 ```
 
-The script parses the workload, `pidstat`, and `tegrastats` logs and generates:
+For the concurrent experiment, the script generates:
 
 ```text
 all_logs/parsed_logs_all.xlsx
 ```
 
-The workbook contains the following data:
+For the isolated experiment, it generates:
+
+```text
+isolated_logs/parsed_logs_isolated.xlsx
+```
+
+The workbooks contain:
 
 - `Inference_Time`: per-image inference time for each workload
 - `Processing_Time`: preprocessing, inference, postprocessing, and total processing time
@@ -225,21 +288,13 @@ The workbook contains the following data:
 
 ### 7.2 Generate Graphs
 
-After generating `parsed_logs_all.xlsx`, run:
+After parsing the logs, run:
 
 ```bash
 python3 plot_graphs.py
 ```
 
-The script generates:
-
-```text
-all_logs/inference_plot.png
-all_logs/tegrastats_boxplot.png
-all_logs/workload_boxplot.png
-```
-
-These plots visualize inference time and system/per-workload resource utilization.
+The script generates inference-time and resource-utilization plots for the available concurrent and isolated experiment results.
 
 ## 8. Collected Metrics and Output
 
@@ -259,7 +314,7 @@ Total Processing Time
 
 The workload scripts additionally measure the wall-clock time of the complete model execution.
 
-Therefore, the following timing measurements are available:
+The following timing measurements are available:
 
 - **Preprocessing time**: preprocessing time reported for each image
 - **Inference time**: inference time reported for each image
@@ -283,21 +338,37 @@ The reported processing time and measured wall-clock time cover different execut
 - GPU utilization
 - RAM usage
 
-### Nsight Systems Profiles
+### Nsight Systems Trace Data
 
-NVIDIA Nsight Systems generates a separate profiling report for each workload:
+NVIDIA Nsight Systems generates a `.nsys-rep` report for each workload. Each report is also exported to an SQLite database containing the collected trace data.
+
+Selected trace data are additionally exported to CSV files for direct inspection and analysis:
 
 ```text
-nsys_classification.nsys-rep
-nsys_detection.nsys-rep
-nsys_estimation.nsys-rep
-nsys_segmentation.nsys-rep
-nsys_obb.nsys-rep
+nsys/
+├── nsys_detection.nsys-rep
+├── nsys_detection.sqlite
+├── nsys_detection_kernel.csv
+├── nsys_detection_runtime.csv
+├── nsys_detection_memcpy.csv
+├── nsys_detection_synchronization.csv
+├── nsys_detection_nvtx.csv
+├── nsys_detection_osrt.csv
+└── ...
 ```
 
-These files can be opened using NVIDIA Nsight Systems for timeline-based analysis of CUDA execution and runtime behavior.
+The CSV files contain:
 
-A typical concurrent experiment produces files such as:
+- `*_kernel.csv`: CUDA kernel execution traces
+- `*_runtime.csv`: CUDA Runtime API traces
+- `*_memcpy.csv`: CUDA memory-copy traces
+- `*_synchronization.csv`: CUDA synchronization traces
+- `*_nvtx.csv`: NVTX events
+- `*_osrt.csv`: OS runtime events
+
+The `.nsys-rep` files can be opened using NVIDIA Nsight Systems for timeline-based analysis, while the SQLite and CSV files provide the underlying trace data in formats suitable for programmatic analysis.
+
+A typical concurrent experiment produces:
 
 ```text
 all_logs/
@@ -312,27 +383,28 @@ all_logs/
 ├── pidstat_estimation.log
 ├── pidstat_segmentation.log
 ├── pidstat_obb.log
-├── nsys_classification.log
-├── nsys_detection.log
-├── nsys_estimation.log
-├── nsys_segmentation.log
-├── nsys_obb.log
-├── nsys_classification.nsys-rep
-├── nsys_detection.nsys-rep
-├── nsys_estimation.nsys-rep
-├── nsys_segmentation.nsys-rep
-├── nsys_obb.nsys-rep
 ├── parsed_logs_all.xlsx
 ├── inference_plot.png
 ├── tegrastats_boxplot.png
-└── workload_boxplot.png
+├── workload_boxplot.png
+└── nsys/
+    ├── nsys_classification.nsys-rep
+    ├── nsys_classification.sqlite
+    ├── nsys_classification_kernel.csv
+    ├── ...
+    ├── nsys_detection.nsys-rep
+    ├── nsys_detection.sqlite
+    ├── nsys_detection_kernel.csv
+    └── ...
 ```
 
 ## 9. Notes
 
 - The current concurrent experiment executes five YOLO workloads and uses `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=20` for each workload.
-- The MPS active thread percentage controls the execution resources available to a CUDA context; it should not be interpreted simply as allocating a fixed 20% portion of the entire GPU to each workload.
+- The MPS active-thread percentage controls the execution resources available to a CUDA context; it should not be interpreted as allocating a fixed 20% physical portion of the entire GPU to each workload.
+- The isolated experiment runs the workloads sequentially with MPS disabled.
 - Nsight Systems reports are generated separately because each workload is executed as an independent profiling target.
+- Nsight Systems trace data are retained in `.nsys-rep` and SQLite formats, while selected trace categories are additionally exported to CSV.
 - `pidstat` measures resource usage for individual workload processes, whereas `tegrastats` measures system-level resource utilization.
 - Nsight Systems profiling introduces measurement overhead. Profiling results are primarily intended for analyzing CUDA execution behavior and should be interpreted with this overhead in mind.
-- TensorRT engine files should be regenerated for the target Jetson platform and TensorRT environment when the hardware or software environment changes.
+- TensorRT engines are generated on the target Jetson platform from the `.pt` models provided under `models/`.
