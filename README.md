@@ -49,6 +49,7 @@ The current experimental environment uses:
 - NVIDIA Nsight Systems
 - `pidstat`
 - `tegrastats`
+- `sqlite3`
 - Python 3
 
 The Docker image used for the YOLO workloads is:
@@ -57,7 +58,7 @@ The Docker image used for the YOLO workloads is:
 ultralytics/ultralytics:latest-jetson-jetpack6
 ```
 
-The current experiment scripts use NVIDIA Nsight Systems 2024.5.4 installed on the host and mount it into the workload containers.
+The experiment scripts expect NVIDIA Nsight Systems 2024.5.4 at `/opt/nvidia/nsight-systems/2024.5.4`. If a different version is installed, update the Nsight Systems path in the experiment scripts accordingly.
 
 ## 4. Repository Structure
 
@@ -220,7 +221,7 @@ chmod +x run_isolated_nsys.sh
 ./run_isolated_nsys.sh
 ```
 
-The script first disables NVIDIA MPS and verifies that no MPS control or server process remains. The five workloads are then executed sequentially, one at a time, with Nsight Systems enabled. This provides isolated profiling results that can be compared with concurrent execution.
+Before running the isolated experiment, NVIDIA MPS must be disabled. The script verifies that no MPS control or server process is running and terminates if MPS is enabled. The five workloads are then executed sequentially, one at a time, with Nsight Systems enabled. This provides isolated profiling results that can be compared with concurrent execution.
 
 The isolated results are stored separately under:
 
