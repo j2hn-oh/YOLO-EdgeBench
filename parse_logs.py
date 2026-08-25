@@ -5,12 +5,22 @@ import io
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-LOG_DIR = ROOT / "all_logs"
+
 TASKS = ["detection", "classification", "estimation", "segmentation", "obb"]
-EXCEL_OUT = os.path.join(LOG_DIR, "parsed_logs_all.xlsx")
+
+LOG_CONFIGS = [
+    {
+        "log_dir": ROOT / "all_logs",
+        "excel_name": "parsed_logs_all.xlsx"
+    },
+    {
+        "log_dir": ROOT / "isolated_logs",
+        "excel_name": "parsed_logs_isolated.xlsx"
+    }
+]
 
 
-def parse_inference_logs(writer):
+def parse_inference_logs(writer, log_dir):
     """ 이미지별 preprocess/inference/postprocess/total 시간 추출 및 엑셀 시트 추가 """
 
     pattern = re.compile(
@@ -25,9 +35,9 @@ def parse_inference_logs(writer):
     inference_data = {}
 
     for task in TASKS:
-        filepath = os.path.join(LOG_DIR, f"{task}.log")
+        filepath = log_dir / f"{task}.log"
 
-        if not os.path.exists(filepath):
+        if not filepath.exists():
             continue
 
         preprocess_times = []
@@ -80,12 +90,13 @@ def parse_inference_logs(writer):
         print("Preprocess/Inference/Postprocess/Total 시간 시트 저장 완료")
 
 
-def parse_tegrastats_logs(writer):
+def parse_tegrastats_logs(writer, log_dir):
     """ 전체 시스템 리소스 데이터 추출 및 엑셀 시트 추가 """
-    data = []
-    filepath = os.path.join(LOG_DIR, "all_tegrastat.log")
 
-    if not os.path.exists(filepath):
+    data = []
+    filepath = log_dir / "all_tegrastat.log"
+
+    if not filepath.exists():
         return
 
     time_pattern = re.compile(r"^(\d{2}-\d{2}-\d{4} \d{2}:\d{2}:\d{2})")
@@ -93,7 +104,7 @@ def parse_tegrastats_logs(writer):
     ram_pattern = re.compile(r"RAM (\d+)/(\d+)MB")
     gpu_pattern = re.compile(r"GR3D(?:_FREQ)?\s+(\d+)%")
 
-    with open(filepath, 'r') as f:
+    with open(filepath, "r") as f:
         for line in f:
             time_match = time_pattern.search(line)
             ram_match = ram_pattern.search(line)
@@ -101,12 +112,12 @@ def parse_tegrastats_logs(writer):
             cpu_match = cpu_pattern.search(line)
 
             if ram_match and gpu_match and cpu_match:
-                cores = cpu_match.group(1).split(',')
+                cores = cpu_match.group(1).split(",")
                 cpu_sum = 0
 
                 for core in cores:
-                    if '%' in core:
-                        cpu_sum += int(core.split('%')[0])
+                    if "%" in core:
+                        cpu_sum += int(core.split("%")[0])
 
                 avg_cpu = round(cpu_sum / len(cores), 1) if cores else 0.0
 
@@ -125,26 +136,26 @@ def parse_tegrastats_logs(writer):
         print(f"전체 GPU/Mem/CPU 시트 저장 완료 (총 {len(df)}건)")
 
 
-def parse_pidstat_logs(writer):
+def parse_pidstat_logs(writer, log_dir):
     """ 워크로드별 리소스 데이터 추출 및 개별 엑셀 시트 추가 """
 
     for task in TASKS:
-        filepath = os.path.join(LOG_DIR, f"pidstat_{task}.log")
+        filepath = log_dir / f"pidstat_{task}.log"
 
-        if not os.path.exists(filepath):
+        if not filepath.exists():
             continue
 
         clean_lines = []
         header_found = False
 
-        with open(filepath, 'r') as f:
+        with open(filepath, "r") as f:
             for line in f:
-                if 'Linux' in line or line.isspace():
+                if "Linux" in line or line.isspace():
                     continue
 
-                if 'Time' in line and 'PID' in line:
+                if "Time" in line and "PID" in line:
                     if not header_found:
-                        line = line.replace('# Time', 'Time').replace('#Time', 'Time')
+                        line = line.replace("# Time", "Time").replace("#Time", "Time")
                         clean_lines.append(line)
                         header_found = True
                     continue
@@ -153,12 +164,12 @@ def parse_pidstat_logs(writer):
 
         if len(clean_lines) > 1:
             df = pd.read_csv(
-                io.StringIO(''.join(clean_lines)),
-                sep=r'\s+'
+                io.StringIO("".join(clean_lines)),
+                sep=r"\s+"
             )
 
-            if 'RSS' in df.columns:
-                df['RSS_MB'] = df['RSS'] / 1024.0
+            if "RSS" in df.columns:
+                df["RSS_MB"] = df["RSS"] / 1024.0
 
             sheet_name = f"{task}_pidstat"
             df.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -166,8 +177,28 @@ def parse_pidstat_logs(writer):
     print("워크로드별 리소스 시트 저장 완료")
 
 
+def parse_log_directory(log_dir, excel_name):
+    """ 지정된 로그 디렉터리를 하나의 Excel 파일로 변환 """
+
+    if not log_dir.exists():
+        print(f"로그 디렉터리 없음: {log_dir}")
+        return
+
+    excel_out = log_dir / excel_name
+
+    print(f"\nParsing: {log_dir}")
+
+    with pd.ExcelWriter(excel_out, engine="openpyxl") as writer:
+        parse_inference_logs(writer, log_dir)
+        parse_tegrastats_logs(writer, log_dir)
+        parse_pidstat_logs(writer, log_dir)
+
+    print(f"Excel 저장 완료: {excel_out}")
+
+
 if __name__ == "__main__":
-    with pd.ExcelWriter(EXCEL_OUT, engine='openpyxl') as writer:
-        parse_inference_logs(writer)
-        parse_tegrastats_logs(writer)
-        parse_pidstat_logs(writer)
+    for config in LOG_CONFIGS:
+        parse_log_directory(
+            config["log_dir"],
+            config["excel_name"]
+        )

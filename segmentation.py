@@ -1,7 +1,7 @@
 import time
 from ultralytics import YOLO
 
-model = YOLO("yolo26n-seg.engine", task="segment")
+model = YOLO("./models/yolo26n-seg.engine", task="segment")
 
 image_path = "./dota_images" 
 

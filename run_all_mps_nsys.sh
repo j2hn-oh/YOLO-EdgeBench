@@ -6,8 +6,9 @@ PIPE="/tmp/nvidia-mps"
 MPSLOG="/tmp/nvidia-log"
 DELAY=5
 LOG_DIR="$ROOT/all_logs"
+NSYS_DIR="$LOG_DIR/nsys"
 
-mkdir -p "$LOG_DIR" "$PIPE" "$MPSLOG"
+mkdir -p "$LOG_DIR" "$NSYS_DIR" "$PIPE" "$MPSLOG"
 
 # 1. 환경변수 설정 (pidstat 시간을 ISO 8601 형식으로 기록하여 tegrastats와 매칭 용이)
 export S_TIME_FORMAT=ISO
@@ -62,7 +63,7 @@ while time.time_ns() < target_ns:
 # Host의 Nsight Systems를 container에 mount하여 사용
 nsys = '/opt/nsys/target-linux-tegra-armv8/nsys'
 task_name = os.path.splitext(file_name)[0]
-output = f'/home/all_logs/nsys_{task_name}'
+output = f'/home/all_logs/nsys/nsys_{task_name}'
 task_log = f'/home/all_logs/{task_name}.log'
 
 # 실제 workload의 stdout/stderr는 task별 log에 직접 기록
@@ -85,7 +86,7 @@ os.execvp(
         command
     ]
 )
-PY" > "$LOG_DIR/nsys_$NAME.log" 2>&1 &
+PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
 
     DOCKER_RUN_PID=$! # docker run 명령의 PID
 
@@ -135,6 +136,71 @@ P5=$!
 wait $P1 $P2 $P3 $P4 $P5
 
 sudo tegrastats --stop >/dev/null 2>&1 || true
+
+# Nsight Systems 결과를 SQLite 및 CSV로 저장
+for task in detection classification estimation segmentation obb; do
+    REPORT="$NSYS_DIR/nsys_${task}.nsys-rep"
+    SQLITE="$NSYS_DIR/nsys_${task}.sqlite"
+
+    if [ -f "$REPORT" ]; then
+        # 1) 전체 trace 데이터를 SQLite로 export
+        /usr/local/bin/nsys export \
+            --type sqlite \
+            --force-overwrite=true \
+            --output "$SQLITE" \
+            "$REPORT"
+
+        # 2) CUDA kernel 실행 정보
+        sqlite3 -header -csv "$SQLITE" "
+SELECT
+    k.start,
+    k.end,
+    (k.end - k.start) AS duration_ns,
+    (k.end - k.start) / 1000000.0 AS duration_ms,
+    s.value AS kernel_name,
+    k.deviceId,
+    k.contextId,
+    k.streamId,
+    k.correlationId,
+    k.registersPerThread,
+    k.gridX,
+    k.gridY,
+    k.gridZ,
+    k.blockX,
+    k.blockY,
+    k.blockZ,
+    k.staticSharedMemory,
+    k.dynamicSharedMemory
+FROM CUPTI_ACTIVITY_KIND_KERNEL AS k
+LEFT JOIN StringIds AS s
+    ON k.demangledName = s.id;
+" > "$NSYS_DIR/nsys_${task}_kernel.csv"
+
+        # 3) CUDA Runtime API 호출 정보
+        sqlite3 -header -csv "$SQLITE" \
+            "SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;" \
+            > "$NSYS_DIR/nsys_${task}_runtime.csv"
+
+        # 4) CUDA memory copy 정보
+        sqlite3 -header -csv "$SQLITE" \
+            "SELECT * FROM CUPTI_ACTIVITY_KIND_MEMCPY;" \
+            > "$NSYS_DIR/nsys_${task}_memcpy.csv"
+
+        # 5) CUDA synchronization 정보
+        sqlite3 -header -csv "$SQLITE" \
+            "SELECT * FROM CUPTI_ACTIVITY_KIND_SYNCHRONIZATION;" \
+            > "$NSYS_DIR/nsys_${task}_synchronization.csv"
+
+        # 6) NVTX event 정보
+        sqlite3 -header -csv "$SQLITE" \
+            "SELECT * FROM NVTX_EVENTS;" \
+            > "$NSYS_DIR/nsys_${task}_nvtx.csv"
+
+        # 7) OS runtime event 정보
+        sqlite3 -header -csv "$SQLITE" \
+            "SELECT * FROM OSRT_API;" \
+            > "$NSYS_DIR/nsys_${task}_osrt.csv"
+    fi
+done
+
 echo "All tasks done. Logs are in $LOG_DIR"
-
-

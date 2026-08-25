@@ -1,7 +1,7 @@
 import time
 from ultralytics import YOLO
 
-model = YOLO("yolo26n.engine", task="detect")
+model = YOLO("./models/yolo26n.engine", task="detect")
 
 image_path = "./coco_images"
 
