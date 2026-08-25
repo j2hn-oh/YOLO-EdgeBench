@@ -211,13 +211,13 @@ A separate `.nsys-rep` file is generated for each workload.
 
 ### 6.2 Isolated Nsight Systems Profiling
 
-`run_isolated_nsight.sh` is used to profile each workload individually without concurrent YOLO workloads.
+`run_isolated_nsys.sh` is used to profile each workload individually without concurrent YOLO workloads.
 
 Run:
 
 ```bash
-chmod +x run_isolated_nsight.sh
-./run_isolated_nsight.sh
+chmod +x run_isolated_nsys.sh
+./run_isolated_nsys.sh
 ```
 
 The script first disables NVIDIA MPS and verifies that no MPS control or server process remains. The five workloads are then executed sequentially, one at a time, with Nsight Systems enabled. This provides isolated profiling results that can be compared with concurrent execution.
