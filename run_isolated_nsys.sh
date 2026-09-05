@@ -101,6 +101,7 @@ echo "[INFO] Cleaning previous logs..."
 for NAME in "${WORKLOADS[@]}"; do
     rm -f "$LOG_DIR/${NAME}.log"
     rm -f "$LOG_DIR/pidstat_${NAME}.log"
+    rm -f "$LOG_DIR/tegrastat_${NAME}"_r*.log
 done
 
 rm -f "$LOG_DIR/all_tegrastat.log"
@@ -134,13 +135,6 @@ trap cleanup INT TERM EXIT
 sudo tegrastats --stop \
     >/dev/null 2>&1 || true
 
-sudo tegrastats \
-    --interval 1000 \
-    --logfile "$LOG_DIR/all_tegrastat.log" \
-    >/dev/null 2>&1 &
-
-TEGRA_PID=$!
-
 run_workload()
 {
     local NAME="$1"
@@ -158,12 +152,16 @@ run_workload()
         "$CURRENT_CONTAINER" \
         >/dev/null 2>&1 || true
 
+    TEGRA_LOG="$LOG_DIR/tegrastat_${NAME}_r${REPEAT}.log"
+
     TARGET_NS=$(python3 -c \
         "import time; print(time.time_ns() + $DELAY * 1000000000)"
     )
 
     NSYS_BASE="/logs/nsys/${NAME}"
 
+    # NVTX predictor 사용 시 아래 mount 추가 
+    # -v "$ROOT/predictor.py:/ultralytics/ultralytics/engine/predictor.py:ro"
     sudo docker run --rm \
         --name "$CURRENT_CONTAINER" \
         --runtime=nvidia \
@@ -222,7 +220,7 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
 
     ACTUAL_PID=""
 
-    for i in $(seq 1 60); do
+    for i in $(seq 1 240); do
 
         ACTUAL_PID=$(
             sudo docker top \
@@ -240,13 +238,28 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
             break
         fi
 
-        sleep 0.2
+        sleep 0.05
     done
 
     PIDSTAT_PID=""
+    TEGRA_PID=""
 
     if [ -n "${ACTUAL_PID:-}" ]; then
 
+        echo "[INFO] Workload PID: $ACTUAL_PID"
+
+        # 실제 workload Python process가 확인된 시점부터 GPU 측정
+        sudo tegrastats --stop \
+            >/dev/null 2>&1 || true
+
+        sudo tegrastats \
+            --interval 100 \
+            --logfile "$TEGRA_LOG" \
+            >/dev/null 2>&1 &
+
+        TEGRA_PID=$!
+
+        # workload Python process의 CPU/Memory 측정
         pidstat \
             -p "$ACTUAL_PID" \
             -u \
@@ -257,27 +270,44 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
 
         PIDSTAT_PID=$!
 
+        # 실제 workload Python process가 종료될 때까지 대기
+        while ps -p "$ACTUAL_PID" >/dev/null 2>&1; do
+            sleep 0.05
+        done
+
+        # workload 종료 직후 tegrastats 종료
+        sudo tegrastats --stop \
+            >/dev/null 2>&1 || true
+
+        if [ -n "${TEGRA_PID:-}" ]; then
+            wait "$TEGRA_PID" \
+                2>/dev/null || true
+            TEGRA_PID=""
+        fi
+
+        # workload 종료 직후 pidstat도 종료
+        if [ -n "${PIDSTAT_PID:-}" ]; then
+            kill "$PIDSTAT_PID" \
+                >/dev/null 2>&1 || true
+
+            wait "$PIDSTAT_PID" \
+                2>/dev/null || true
+
+            PIDSTAT_PID=""
+        fi
+
     else
 
         echo "[WARNING] Python PID not found"
 
         : > "$LOG_DIR/pidstat_${NAME}.log"
+        : > "$TEGRA_LOG"
     fi
 
+    # Nsight/Docker가 완전히 종료되고 report가 생성될 때까지 대기
     wait "$DOCKER_PID"
 
     EXIT_STATUS=$?
-
-    if [ -n "${PIDSTAT_PID:-}" ]; then
-
-        kill "$PIDSTAT_PID" \
-            >/dev/null 2>&1 || true
-
-        wait "$PIDSTAT_PID" \
-            2>/dev/null || true
-
-        PIDSTAT_PID=""
-    fi
 
     # workload 실패 시 Nsight 후처리를 수행하지 않음
     if [ "$EXIT_STATUS" -ne 0 ]; then
@@ -367,12 +397,7 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
 
     # Nsight 실행 후 터미널 상태 복구
     stty sane 2>/dev/null || true
-
-    if [ "$EXIT_STATUS" -eq 0 ]; then
-        echo "[DONE] $NAME"
-    else
-        echo "[ERROR] $NAME failed (exit status=$EXIT_STATUS)"
-    fi
+    printf '\n[DONE] %s\n' "$NAME"
 
     CURRENT_CONTAINER=""
 

@@ -20,7 +20,7 @@ fi
 
 # 2. tegrastats 시작
 sudo tegrastats --stop >/dev/null 2>&1 || true
-sudo tegrastats --interval 1000 --logfile "$LOG_DIR/all_tegrastat.log" &
+sudo tegrastats --interval 100 --logfile "$LOG_DIR/all_tegrastat.log" &
 
 TARGET_NS=$(python3 -c "import time; print(time.time_ns() + $DELAY * 1000000000)")
 
@@ -92,7 +92,7 @@ PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
 
     # 컨테이너가 생성되고 실제 Python workload가 뜰 때까지 최대 10초간 반복 확인
     ACTUAL_PID=""
-    for i in {1..20}; do
+    for i in $(seq 1 240); do
         # 1단계: 컨테이너 내부에서 실행되는 실제 Python workload의 호스트 PID 찾기
         ACTUAL_PID=$(sudo docker top "$NAME" -eo pid,comm,args 2>/dev/null | \
             awk -v file="$FILE" '$2 ~ /^python/ && $0 ~ file {print $1; exit}')
@@ -102,23 +102,59 @@ PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
             break
         fi
 
-        sleep 0.5 # 못 찾았으면 0.5초 대기 후 다시 시도
+        sleep 0.05 # 못 찾았으면 0.05초 대기 후 다시 시도
     done
 
     if [ ! -z "$ACTUAL_PID" ]; then
-        # 3) pidstat 시작 (CPU + MEM)
-        pidstat -p "${ACTUAL_PID}" -u -r -h 1 > "${PIDSTAT_LOG}" &
+
+        # workload별 tegrastats 구간 파일
+        INTERVAL_FILE="$LOG_DIR/tegrastat_${NAME}_interval.csv"
+
+        # workload 시작 시점의 tegrastats line 위치 기록
+        START_LINE=$(wc -l < "$LOG_DIR/all_tegrastat.log")
+
+        # CPU + Memory 측정 시작
+        pidstat \
+            -p "$ACTUAL_PID" \
+            -u \
+            -r \
+            -h \
+            1 \
+            > "$PIDSTAT_LOG" &
+
         PIDSTAT_MON_PID=$!
+
+        # 실제 Python workload가 종료될 때까지 대기
+        while ps -p "$ACTUAL_PID" >/dev/null 2>&1; do
+            sleep 0.05
+        done
+
+        # workload 종료 시점의 tegrastats line 위치 기록
+        END_LINE=$(wc -l < "$LOG_DIR/all_tegrastat.log")
+
+        # CSV 저장
+        echo "start_line,end_line" > "$INTERVAL_FILE"
+        echo "$START_LINE,$END_LINE" >> "$INTERVAL_FILE"
+
+        # pidstat 종료
+        if [ ! -z "${PIDSTAT_MON_PID:-}" ]; then
+            kill "$PIDSTAT_MON_PID" >/dev/null 2>&1 || true
+            wait "$PIDSTAT_MON_PID" 2>/dev/null || true
+        fi
+
     else
-        echo "python PID 찾을 수 없어 pidstat을 실행X"
+
+        echo "[WARNING] $NAME Python PID 찾을 수 없음"
+
         PIDSTAT_MON_PID=""
+
+        echo "start_line,end_line" \
+            > "$LOG_DIR/tegrastat_${NAME}_interval.csv"
+
     fi
 
-    # Docker 작업이 끝날 때까지 대기
-    wait $DOCKER_RUN_PID
-
-    # 작업 종료 후 pidstat 프로세스 종료
-    [ ! -z "$PIDSTAT_MON_PID" ] && kill $PIDSTAT_MON_PID 2>/dev/null
+    # Nsight report까지 완전히 생성될 때까지 Docker 종료 대기
+    wait "$DOCKER_RUN_PID"
 }
 
 # 각 테스크 병렬 실행
