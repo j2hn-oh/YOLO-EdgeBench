@@ -100,7 +100,10 @@ def parse_tegrastats_logs(writer, log_dir):
     cpu_pattern = re.compile(r"CPU \[(.*?)\]")
     ram_pattern = re.compile(r"RAM (\d+)/(\d+)MB")
     gpu_pattern = re.compile(r"GR3D(?:_FREQ)?\s+(\d+)%")
-    power_pattern = re.compile(r"VDD_IN\s+(\d+)mW/\d+mW")
+    vdd_in_pattern = re.compile(r"VDD_IN\s+(\d+)mW/\d+mW")
+    vdd_gpu_soc_pattern = re.compile(r"VDD_GPU_SOC\s+(\d+)mW/\d+mW")
+    vdd_cpu_cv_pattern = re.compile(r"VDD_CPU_CV\s+(\d+)mW/\d+mW")
+    vin_sys_5v0_pattern = re.compile(r"VIN_SYS_5V0\s+(\d+)mW/\d+mW")
 
     def parse_lines(lines):
         """ tegrastats line 목록을 DataFrame으로 변환 """
@@ -113,9 +116,27 @@ def parse_tegrastats_logs(writer, log_dir):
             ram_match = ram_pattern.search(line)
             gpu_match = gpu_pattern.search(line)
             cpu_match = cpu_pattern.search(line)
-            power_match = power_pattern.search(line)
+            vdd_in_match = vdd_in_pattern.search(line)
+            vdd_gpu_soc_match = vdd_gpu_soc_pattern.search(line)
+            vdd_cpu_cv_match = vdd_cpu_cv_pattern.search(line)
+            vin_sys_5v0_match = vin_sys_5v0_pattern.search(line)
 
-            if not (ram_match and gpu_match and cpu_match and power_match):
+            if vdd_in_match:
+                # Orin Nano / Orin NX
+                power_mw = int(vdd_in_match.group(1))
+
+            elif vdd_gpu_soc_match and vdd_cpu_cv_match and vin_sys_5v0_match:
+                # Jetson AGX Orin
+                power_mw = (
+                    int(vdd_gpu_soc_match.group(1))
+                    + int(vdd_cpu_cv_match.group(1))
+                    + int(vin_sys_5v0_match.group(1))
+                )
+
+            else:
+                continue
+
+            if not (ram_match and gpu_match and cpu_match):
                 continue
 
             cores = cpu_match.group(1).split(",")
@@ -152,7 +173,7 @@ def parse_tegrastats_logs(writer, log_dir):
                 "RAM_Used_MB": int(ram_match.group(1)),
                 "RAM_Total_MB": int(ram_match.group(2)),
                 "GPU_Util%": int(gpu_match.group(1)),
-                "Power_mW": int(power_match.group(1)),
+                "Power_mW": power_mw,
             })
 
         return pd.DataFrame(data)
