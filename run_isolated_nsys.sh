@@ -178,7 +178,6 @@ run_workload()
         --gpus=all \
         --cap-add=SYS_ADMIN \
         -v "$ROOT:/home" \
-        -v "$ROOT/predictor.py:/ultralytics/ultralytics/engine/predictor.py:ro" \
         -v "$LOG_DIR:/logs" \
         -v "$NSYS_ROOT:$NSYS_ROOT:ro" \
         -e TARGET_NS="$TARGET_NS" \
