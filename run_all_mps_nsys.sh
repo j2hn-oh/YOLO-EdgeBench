@@ -78,6 +78,7 @@ os.execvp(
         nsys,
         'profile',
         '--trace=cuda,nvtx,osrt',
+        '--sample=none',
         '--force-overwrite=true',
         '-o',
         output,
@@ -134,7 +135,7 @@ PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
 
         # CSV 저장
         echo "start_line,end_line" > "$INTERVAL_FILE"
-        echo "$START_LINE,$END_LINE" >> "$INTERVAL_FILE"
+        echo "$((START_LINE + 1)),$END_LINE" >> "$INTERVAL_FILE"
 
         # pidstat 종료
         if [ ! -z "${PIDSTAT_MON_PID:-}" ]; then
