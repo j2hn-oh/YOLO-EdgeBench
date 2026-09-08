@@ -322,25 +322,29 @@ def parse_tegrastats_logs(writer, log_dir):
 
     # ---------------------------------------------------------
     # workload별 실행 구간 추출
+    # concurrent(all_logs): tegrastat_intervals.xlsx의
+    # workload별 sheet에서 start_line/end_line을 읽음
     # ---------------------------------------------------------
+
+    interval_file = log_dir / "tegrastat_intervals.xlsx"
+
+    if not interval_file.exists():
+        print("[WARNING] tegrastat_intervals.xlsx 파일 없음")
+        return
+
+    interval_xls = pd.ExcelFile(interval_file)
 
     for task in TASKS:
 
-        interval_file = (
-            log_dir /
-            f"tegrastat_{task}_interval.csv"
-        )
-
-        if not interval_file.exists():
-
+        if task not in interval_xls.sheet_names:
             print(
-                f"[WARNING] {task} interval 파일 없음"
+                f"[WARNING] {task} interval sheet 없음"
             )
-
             continue
 
-        interval_df = pd.read_csv(
-            interval_file
+        interval_df = pd.read_excel(
+            interval_file,
+            sheet_name=task
         )
 
         if interval_df.empty:
@@ -361,7 +365,7 @@ def parse_tegrastats_logs(writer, log_dir):
                 interval_df.iloc[0]["end_line"]
             )
 
-        except (ValueError, KeyError):
+        except (ValueError, TypeError, KeyError):
 
             print(
                 f"[WARNING] {task} interval 형식 오류"
@@ -388,8 +392,7 @@ def parse_tegrastats_logs(writer, log_dir):
                 df_task["Power_mW"] - baseline_power_mw
             )
 
-        # workload별 time-series는 0부터 다시 시작할 것이므로
-        # index 초기화
+        # workload별 time-series는 0부터 다시 시작
         df_task.reset_index(
             drop=True,
             inplace=True

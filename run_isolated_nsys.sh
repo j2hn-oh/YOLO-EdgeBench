@@ -31,8 +31,8 @@ FILES[segmentation]="segmentation.py"
 FILES[obb]="obb.py"
 
 WORKLOADS=(
-    detection
     classification
+    detection
     estimation
     segmentation
     obb
@@ -136,7 +136,7 @@ trap cleanup INT TERM EXIT
 rm -f "$LOG_DIR/baseline_tegrastat.log"
 
 sudo tegrastats \
-    --interval 100 \
+    --interval 1000 \
     --logfile "$LOG_DIR/baseline_tegrastat.log" \
     >/dev/null 2>&1 &
 
@@ -334,7 +334,7 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
 
         SQLITE="$LOG_DIR/nsys/${NAME}.sqlite"
 
-        # Nsight Systems 결과를 SQLite 및 CSV로 저장
+        # Nsight Systems 결과를 SQLite로 export한 뒤 workload별 XLSX 생성
         if "$NSYS_BIN" export \
             --type sqlite \
             --force-overwrite=true \
@@ -342,61 +342,57 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
             "$NSYS_REP" \
             > "$LOG_DIR/nsys/${NAME}_export.log" 2>&1
         then
-            :
+            XLSX="$LOG_DIR/nsys/${NAME}.xlsx"
+
+            # kernel/runtime/memcpy/synchronization/nvtx/osrt를 한 XLSX의 개별 sheet로 저장
+            SQLITE_PATH="$SQLITE" XLSX_PATH="$XLSX" python3 - << 'PYXLSX'
+import os
+import sqlite3
+from openpyxl import Workbook
+
+sqlite_path = os.environ["SQLITE_PATH"]
+xlsx_path = os.environ["XLSX_PATH"]
+
+queries = {
+    "kernel": """
+        SELECT
+            k.start, k.end,
+            (k.end - k.start) AS duration_ns,
+            (k.end - k.start) / 1000000.0 AS duration_ms,
+            s.value AS kernel_name,
+            k.deviceId, k.contextId, k.streamId, k.correlationId,
+            k.registersPerThread,
+            k.gridX, k.gridY, k.gridZ,
+            k.blockX, k.blockY, k.blockZ,
+            k.staticSharedMemory, k.dynamicSharedMemory
+        FROM CUPTI_ACTIVITY_KIND_KERNEL AS k
+        LEFT JOIN StringIds AS s ON k.demangledName = s.id;
+    """,
+    "runtime": "SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;",
+    "memcpy": "SELECT * FROM CUPTI_ACTIVITY_KIND_MEMCPY;",
+    "synchronization": "SELECT * FROM CUPTI_ACTIVITY_KIND_SYNCHRONIZATION;",
+    "nvtx": "SELECT * FROM NVTX_EVENTS;",
+    "osrt": "SELECT * FROM OSRT_API;",
+}
+
+conn = sqlite3.connect(sqlite_path)
+wb = Workbook(write_only=True)
+for sheet_name, query in queries.items():
+    ws = wb.create_sheet(title=sheet_name)
+    try:
+        cur = conn.execute(query)
+        ws.append([col[0] for col in cur.description])
+        for row in cur:
+            ws.append(list(row))
+    except sqlite3.Error as e:
+        ws.append(["ERROR"])
+        ws.append([str(e)])
+conn.close()
+wb.save(xlsx_path)
+PYXLSX
         else
             echo "[ERROR] SQLite export failed: $NAME"
         fi
-
-        # 1) CUDA kernel 실행 정보
-        sqlite3 -header -csv "$SQLITE" "
-    SELECT
-        k.start,
-        k.end,
-        (k.end - k.start) AS duration_ns,
-        (k.end - k.start) / 1000000.0 AS duration_ms,
-        s.value AS kernel_name,
-        k.deviceId,
-        k.contextId,
-        k.streamId,
-        k.correlationId,
-        k.registersPerThread,
-        k.gridX,
-        k.gridY,
-        k.gridZ,
-        k.blockX,
-        k.blockY,
-        k.blockZ,
-        k.staticSharedMemory,
-        k.dynamicSharedMemory
-    FROM CUPTI_ACTIVITY_KIND_KERNEL AS k
-    LEFT JOIN StringIds AS s
-        ON k.demangledName = s.id;
-    " > "$LOG_DIR/nsys/${NAME}_kernel.csv"
-
-        # 2) CUDA Runtime API 호출 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;" \
-            > "$LOG_DIR/nsys/${NAME}_runtime.csv"
-
-        # 3) CUDA memory copy 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_MEMCPY;" \
-            > "$LOG_DIR/nsys/${NAME}_memcpy.csv"
-
-        # 4) CUDA synchronization 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_SYNCHRONIZATION;" \
-            > "$LOG_DIR/nsys/${NAME}_synchronization.csv"
-
-        # 5) NVTX event 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM NVTX_EVENTS;" \
-            > "$LOG_DIR/nsys/${NAME}_nvtx.csv"
-
-        # 6) OS runtime event 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM OSRT_API;" \
-            > "$LOG_DIR/nsys/${NAME}_osrt.csv"
 
     else
 

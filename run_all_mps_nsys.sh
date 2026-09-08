@@ -7,8 +7,15 @@ MPSLOG="/tmp/nvidia-log"
 DELAY=5
 LOG_DIR="$ROOT/all_logs"
 NSYS_DIR="$LOG_DIR/nsys"
+INTERVAL_TMP="$LOG_DIR/tegrastat_intervals.tmp"
+INTERVAL_XLSX="$LOG_DIR/tegrastat_intervals.xlsx"
 
-mkdir -p "$LOG_DIR" "$NSYS_DIR" "$PIPE" "$MPSLOG"
+# 이전 Nsight 결과와 interval 중간/결과 파일 정리
+mkdir -p "$LOG_DIR" "$PIPE" "$MPSLOG"
+rm -rf "$NSYS_DIR"
+mkdir -p "$NSYS_DIR"
+rm -f "$INTERVAL_TMP" "$INTERVAL_XLSX"
+rm -f "$LOG_DIR"/tegrastat_*_interval.csv
 
 # 1. 환경변수 설정 (pidstat 시간을 ISO 8601 형식으로 기록하여 tegrastats와 매칭 용이)
 export S_TIME_FORMAT=ISO
@@ -78,7 +85,7 @@ while time.time_ns() < target_ns:
 # Host의 Nsight Systems를 container에 mount하여 사용
 nsys = '/opt/nsys/target-linux-tegra-armv8/nsys'
 task_name = os.path.splitext(file_name)[0]
-output = f'/home/all_logs/nsys/nsys_{task_name}'
+output = f'/home/all_logs/nsys/{task_name}'
 task_log = f'/home/all_logs/{task_name}.log'
 
 # 실제 workload의 stdout/stderr는 task별 log에 직접 기록
@@ -102,29 +109,24 @@ os.execvp(
         command
     ]
 )
-PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
+PY" > "$NSYS_DIR/$NAME.log" 2>&1 &
 
-    DOCKER_RUN_PID=$! # docker run 명령의 PID
+    DOCKER_RUN_PID=$!
 
-    # 컨테이너가 생성되고 실제 Python workload가 뜰 때까지 최대 10초간 반복 확인
+    # 컨테이너가 생성되고 실제 Python workload가 뜰 때까지 최대 12초간 반복 확인
     ACTUAL_PID=""
     for i in $(seq 1 240); do
-        # 1단계: 컨테이너 내부에서 실행되는 실제 Python workload의 호스트 PID 찾기
         ACTUAL_PID=$(sudo docker top "$NAME" -eo pid,comm,args 2>/dev/null | \
             awk -v file="$FILE" '$2 ~ /^python/ && $0 ~ file {print $1; exit}')
 
-        # 2단계: Python workload PID를 찾았으면 반복문 종료
-        if [ ! -z "$ACTUAL_PID" ]; then
+        if [ -n "$ACTUAL_PID" ]; then
             break
         fi
 
-        sleep 0.05 # 못 찾았으면 0.05초 대기 후 다시 시도
+        sleep 0.05
     done
 
-    if [ ! -z "$ACTUAL_PID" ]; then
-
-        # workload별 tegrastats 구간 파일
-        INTERVAL_FILE="$LOG_DIR/tegrastat_${NAME}_interval.csv"
+    if [ -n "$ACTUAL_PID" ]; then
 
         # workload 시작 시점의 tegrastats line 위치 기록
         START_LINE=$(wc -l < "$LOG_DIR/all_tegrastat.log")
@@ -148,25 +150,27 @@ PY" > "$NSYS_DIR/nsys_$NAME.log" 2>&1 &
         # workload 종료 시점의 tegrastats line 위치 기록
         END_LINE=$(wc -l < "$LOG_DIR/all_tegrastat.log")
 
-        # CSV 저장
-        echo "start_line,end_line" > "$INTERVAL_FILE"
-        echo "$((START_LINE + 1)),$END_LINE" >> "$INTERVAL_FILE"
+        # 병렬 workload들이 하나의 임시 파일에 안전하게 interval 정보 추가
+        (
+            flock -x 200
+            echo "$NAME,$((START_LINE + 1)),$END_LINE" >> "$INTERVAL_TMP"
+        ) 200>"$LOG_DIR/.tegrastat_interval.lock"
 
         # pidstat 종료
-        if [ ! -z "${PIDSTAT_MON_PID:-}" ]; then
+        if [ -n "${PIDSTAT_MON_PID:-}" ]; then
             kill "$PIDSTAT_MON_PID" >/dev/null 2>&1 || true
             wait "$PIDSTAT_MON_PID" 2>/dev/null || true
         fi
 
     else
-
         echo "[WARNING] $NAME Python PID 찾을 수 없음"
-
         PIDSTAT_MON_PID=""
 
-        echo "start_line,end_line" \
-            > "$LOG_DIR/tegrastat_${NAME}_interval.csv"
-
+        # PID를 찾지 못한 workload도 기록
+        (
+            flock -x 200
+            echo "$NAME,," >> "$INTERVAL_TMP"
+        ) 200>"$LOG_DIR/.tegrastat_interval.lock"
     fi
 
     # Nsight report까지 완전히 생성될 때까지 Docker 종료 대기
@@ -189,69 +193,106 @@ wait $P1 $P2 $P3 $P4 $P5
 
 sudo tegrastats --stop >/dev/null 2>&1 || true
 
-# Nsight Systems 결과를 SQLite 및 CSV로 저장
+# workload별 tegrastats interval을 하나의 XLSX에 sheet별로 저장
+INTERVAL_TMP_PATH="$INTERVAL_TMP" INTERVAL_XLSX_PATH="$INTERVAL_XLSX" python3 - << 'PY_INTERVAL'
+import os
+from pathlib import Path
+from openpyxl import Workbook
+
+src = Path(os.environ["INTERVAL_TMP_PATH"])
+dst = Path(os.environ["INTERVAL_XLSX_PATH"])
+
+workloads = ["classification", "detection", "estimation", "segmentation", "obb"]
+records = {}
+
+if src.exists():
+    for line in src.read_text().splitlines():
+        parts = line.strip().split(",")
+        if len(parts) != 3:
+            continue
+        name, start, end = parts
+        records[name] = (start, end)
+
+wb = Workbook()
+wb.remove(wb.active)
+
+for name in workloads:
+    ws = wb.create_sheet(title=name)
+    ws.append(["start_line", "end_line"])
+
+    if name in records:
+        start, end = records[name]
+        if start and end:
+            ws.append([int(start), int(end)])
+
+wb.save(dst)
+PY_INTERVAL
+
+rm -f "$INTERVAL_TMP" "$LOG_DIR/.tegrastat_interval.lock"
+
+# Nsight Systems 결과를 workload별 SQLite 및 XLSX로 저장
 for task in detection classification estimation segmentation obb; do
-    REPORT="$NSYS_DIR/nsys_${task}.nsys-rep"
-    SQLITE="$NSYS_DIR/nsys_${task}.sqlite"
+    REPORT="$NSYS_DIR/${task}.nsys-rep"
+    SQLITE="$NSYS_DIR/${task}.sqlite"
+    XLSX="$NSYS_DIR/${task}.xlsx"
 
     if [ -f "$REPORT" ]; then
-        # 1) 전체 trace 데이터를 SQLite로 export
         /usr/local/bin/nsys export \
             --type sqlite \
             --force-overwrite=true \
             --output "$SQLITE" \
             "$REPORT"
 
-        # 2) CUDA kernel 실행 정보
-        sqlite3 -header -csv "$SQLITE" "
-SELECT
-    k.start,
-    k.end,
-    (k.end - k.start) AS duration_ns,
-    (k.end - k.start) / 1000000.0 AS duration_ms,
-    s.value AS kernel_name,
-    k.deviceId,
-    k.contextId,
-    k.streamId,
-    k.correlationId,
-    k.registersPerThread,
-    k.gridX,
-    k.gridY,
-    k.gridZ,
-    k.blockX,
-    k.blockY,
-    k.blockZ,
-    k.staticSharedMemory,
-    k.dynamicSharedMemory
-FROM CUPTI_ACTIVITY_KIND_KERNEL AS k
-LEFT JOIN StringIds AS s
-    ON k.demangledName = s.id;
-" > "$NSYS_DIR/nsys_${task}_kernel.csv"
+        # kernel/runtime/memcpy/synchronization/nvtx/osrt를 한 XLSX의 개별 sheet로 저장
+        SQLITE_PATH="$SQLITE" XLSX_PATH="$XLSX" python3 - << 'PYXLSX'
+import os
+import sqlite3
+from openpyxl import Workbook
 
-        # 3) CUDA Runtime API 호출 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;" \
-            > "$NSYS_DIR/nsys_${task}_runtime.csv"
+sqlite_path = os.environ["SQLITE_PATH"]
+xlsx_path = os.environ["XLSX_PATH"]
 
-        # 4) CUDA memory copy 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_MEMCPY;" \
-            > "$NSYS_DIR/nsys_${task}_memcpy.csv"
+queries = {
+    "kernel": """
+        SELECT
+            k.start, k.end,
+            (k.end - k.start) AS duration_ns,
+            (k.end - k.start) / 1000000.0 AS duration_ms,
+            s.value AS kernel_name,
+            k.deviceId, k.contextId, k.streamId, k.correlationId,
+            k.registersPerThread,
+            k.gridX, k.gridY, k.gridZ,
+            k.blockX, k.blockY, k.blockZ,
+            k.staticSharedMemory, k.dynamicSharedMemory
+        FROM CUPTI_ACTIVITY_KIND_KERNEL AS k
+        LEFT JOIN StringIds AS s ON k.demangledName = s.id;
+    """,
+    "runtime": "SELECT * FROM CUPTI_ACTIVITY_KIND_RUNTIME;",
+    "memcpy": "SELECT * FROM CUPTI_ACTIVITY_KIND_MEMCPY;",
+    "synchronization": "SELECT * FROM CUPTI_ACTIVITY_KIND_SYNCHRONIZATION;",
+    "nvtx": "SELECT * FROM NVTX_EVENTS;",
+    "osrt": "SELECT * FROM OSRT_API;",
+}
 
-        # 5) CUDA synchronization 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM CUPTI_ACTIVITY_KIND_SYNCHRONIZATION;" \
-            > "$NSYS_DIR/nsys_${task}_synchronization.csv"
+conn = sqlite3.connect(sqlite_path)
+wb = Workbook(write_only=True)
 
-        # 6) NVTX event 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM NVTX_EVENTS;" \
-            > "$NSYS_DIR/nsys_${task}_nvtx.csv"
+for sheet_name, query in queries.items():
+    ws = wb.create_sheet(title=sheet_name)
+    try:
+        cur = conn.execute(query)
+        ws.append([col[0] for col in cur.description])
+        for row in cur:
+            ws.append(list(row))
+    except sqlite3.Error as e:
+        ws.append(["ERROR"])
+        ws.append([str(e)])
 
-        # 7) OS runtime event 정보
-        sqlite3 -header -csv "$SQLITE" \
-            "SELECT * FROM OSRT_API;" \
-            > "$NSYS_DIR/nsys_${task}_osrt.csv"
+conn.close()
+wb.save(xlsx_path)
+PYXLSX
+    else
+        echo "[WARNING] Nsight report not found: $REPORT"
     fi
 done
 
