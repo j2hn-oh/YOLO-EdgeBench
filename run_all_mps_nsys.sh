@@ -18,9 +18,24 @@ if ! pgrep -f nvidia-cuda-mps-control >/dev/null; then
     exit 1
 fi
 
-# 2. tegrastats 시작
+# 2. Baseline power 측정
 sudo tegrastats --stop >/dev/null 2>&1 || true
-sudo tegrastats --interval 100 --logfile "$LOG_DIR/all_tegrastat.log" &
+rm -f "$LOG_DIR/baseline_tegrastat.log"
+
+sudo tegrastats \
+    --interval 1000 \
+    --logfile "$LOG_DIR/baseline_tegrastat.log" &
+
+sleep 5
+
+sudo tegrastats --stop >/dev/null 2>&1 || true
+
+# 3. Workload용 tegrastats 시작
+rm -f "$LOG_DIR/all_tegrastat.log"
+
+sudo tegrastats \
+    --interval 1000 \
+    --logfile "$LOG_DIR/all_tegrastat.log" &
 
 TARGET_NS=$(python3 -c "import time; print(time.time_ns() + $DELAY * 1000000000)")
 

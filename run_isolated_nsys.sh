@@ -132,6 +132,16 @@ cleanup()
 
 trap cleanup INT TERM EXIT
 
+# Idle baseline power 측정
+rm -f "$LOG_DIR/baseline_tegrastat.log"
+
+sudo tegrastats \
+    --interval 100 \
+    --logfile "$LOG_DIR/baseline_tegrastat.log" \
+    >/dev/null 2>&1 &
+
+sleep 5
+
 sudo tegrastats --stop \
     >/dev/null 2>&1 || true
 
@@ -168,6 +178,7 @@ run_workload()
         --gpus=all \
         --cap-add=SYS_ADMIN \
         -v "$ROOT:/home" \
+        -v "$ROOT/predictor.py:/ultralytics/ultralytics/engine/predictor.py:ro" \
         -v "$LOG_DIR:/logs" \
         -v "$NSYS_ROOT:$NSYS_ROOT:ro" \
         -e TARGET_NS="$TARGET_NS" \
@@ -253,7 +264,7 @@ PY" > "$LOG_DIR/nsys/${NAME}.log" 2>&1 &
             >/dev/null 2>&1 || true
 
         sudo tegrastats \
-            --interval 100 \
+            --interval 1000 \
             --logfile "$TEGRA_LOG" \
             >/dev/null 2>&1 &
 

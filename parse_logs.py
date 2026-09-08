@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-TASKS = ["detection", "classification", "estimation", "segmentation", "obb"]
+TASKS = ["classification", "detection", "estimation", "segmentation", "obb"]
 
 LOG_CONFIGS = [
     {
@@ -186,6 +186,21 @@ def parse_tegrastats_logs(writer, log_dir):
 
         return parse_lines(lines)
 
+    def get_baseline_power(log_dir):
+        """ Idle baseline의 평균 module power 계산 """
+
+        baseline_file = log_dir / "baseline_tegrastat.log"
+
+        if not baseline_file.exists():
+            return None
+
+        df_baseline = parse_one_file(baseline_file)
+
+        if df_baseline.empty:
+            return None
+
+        return df_baseline["Power_mW"].mean()
+
     def parse_file_interval(filepath, start_line, end_line):
         """
         tegrastats 원본 파일에서 지정된 line 범위만 파싱.
@@ -211,6 +226,15 @@ def parse_tegrastats_logs(writer, log_dir):
         ]
 
         return parse_lines(selected_lines)
+
+    baseline_power_mw = get_baseline_power(log_dir)
+
+    if baseline_power_mw is not None:
+        print(
+            f"Baseline power: "
+            f"{baseline_power_mw / 1000:.3f} W"
+        )
+
 
     # =========================================================
     # isolated_logs
@@ -247,6 +271,11 @@ def parse_tegrastats_logs(writer, log_dir):
                 frames,
                 ignore_index=True
             )
+
+            if baseline_power_mw is not None:
+                df_task["Power_Increase_mW"] = (
+                    df_task["Power_mW"] - baseline_power_mw
+                )
 
             df_task.to_excel(
                 writer,
@@ -353,6 +382,11 @@ def parse_tegrastats_logs(writer, log_dir):
             )
 
             continue
+
+        if baseline_power_mw is not None:
+            df_task["Power_Increase_mW"] = (
+                df_task["Power_mW"] - baseline_power_mw
+            )
 
         # workload별 time-series는 0부터 다시 시작할 것이므로
         # index 초기화

@@ -329,6 +329,84 @@ def plot_gpu_timeseries(log_dir, excel_file, sample_interval_ms=100):
         f"{out_path}"
     )
 
+def plot_gpu_violin(log_dir, excel_file):
+    """ 워크로드별 GPU utilization violin plot """
+
+    if not excel_file.exists():
+        return
+
+    xls = pd.ExcelFile(excel_file)
+
+    gpu_tasks = []
+    gpu_data = []
+
+    for task in DESIRED_ORDER:
+        sheet_name = f"{task}_tegrastat"
+
+        if sheet_name not in xls.sheet_names:
+            continue
+
+        df = pd.read_excel(
+            excel_file,
+            sheet_name=sheet_name
+        )
+
+        if "GPU_Util%" not in df.columns:
+            continue
+
+        values = df["GPU_Util%"].dropna().values
+
+        if len(values) > 0:
+            gpu_tasks.append(task)
+            gpu_data.append(values)
+
+    if not gpu_data:
+        return
+
+    plt.figure(figsize=(12, 6))
+
+    plt.violinplot(
+        gpu_data,
+        showmeans=True,
+        showmedians=True,
+        showextrema=True
+    )
+
+    plt.xticks(
+        range(1, len(gpu_tasks) + 1),
+        gpu_tasks
+    )
+
+    plt.ylabel("GPU Utilization (%)")
+    plt.xlabel("Workload (Task)")
+    plt.title("GPU Utilization Distribution per Workload")
+
+    plt.ylim(0, 100)
+
+    plt.grid(
+        axis="y",
+        linestyle="--",
+        alpha=0.7
+    )
+
+    out_path = (
+        log_dir /
+        "gpu_workload_violin.png"
+    )
+
+    plt.savefig(
+        out_path,
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close()
+
+    print(
+        f"GPU workload violin plot 저장 완료: "
+        f"{out_path}"
+    )
+
 def plot_power_timeseries(log_dir, excel_file, sample_interval_ms=100):
     """ 워크로드별 system power time-series """
 
@@ -434,6 +512,121 @@ def plot_power_timeseries(log_dir, excel_file, sample_interval_ms=100):
         f"{out_path}"
     )
 
+def plot_incremental_power_timeseries(
+    log_dir,
+    excel_file,
+    sample_interval_ms=100
+):
+    """ 워크로드별 baseline 대비 증가 전력 time-series """
+
+    if not excel_file.exists():
+        return
+
+    xls = pd.ExcelFile(excel_file)
+
+    power_series = []
+
+    for task in DESIRED_ORDER:
+        sheet_name = f"{task}_tegrastat"
+
+        if sheet_name not in xls.sheet_names:
+            continue
+
+        df = pd.read_excel(
+            excel_file,
+            sheet_name=sheet_name
+        )
+
+        if "Power_Increase_mW" not in df.columns:
+            continue
+
+        power = (
+            df["Power_Increase_mW"]
+            .dropna()
+            .reset_index(drop=True)
+        )
+
+        if power.empty:
+            continue
+
+        time_sec = (
+            power.index.to_numpy()
+            * sample_interval_ms
+            / 1000.0
+        )
+
+        power_series.append(
+            (
+                task,
+                time_sec,
+                power.values / 1000.0
+            )
+        )
+
+    if not power_series:
+        return
+
+    fig, axes = plt.subplots(
+        len(power_series),
+        1,
+        figsize=(12, 12),
+        sharex=True
+    )
+
+    if len(power_series) == 1:
+        axes = [axes]
+
+    for ax, (task, time_sec, power_w) in zip(
+        axes,
+        power_series
+    ):
+        ax.plot(
+            time_sec,
+            power_w,
+            linewidth=1.2
+        )
+
+        ax.axhline(
+            y=0,
+            linewidth=0.8,
+            linestyle="--"
+        )
+
+        ax.set_ylabel("Power Increase (W)")
+        ax.set_title(task.capitalize())
+        ax.grid(
+            axis="both",
+            linestyle="--",
+            alpha=0.7
+        )
+
+    axes[-1].set_xlabel("Time (s)")
+
+    fig.suptitle(
+        "Incremental Power over Time per Workload",
+        fontsize=16
+    )
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    out_path = (
+        log_dir /
+        "incremental_power_workload_timeseries.png"
+    )
+
+    plt.savefig(
+        out_path,
+        dpi=300,
+        bbox_inches="tight"
+    )
+
+    plt.close()
+
+    print(
+        f"Incremental power time-series 저장 완료: "
+        f"{out_path}"
+    )
+
 def plot_log_directory(log_dir, excel_file):
     """ 지정된 실험 결과에 대한 그래프 생성 """
 
@@ -447,12 +640,29 @@ def plot_log_directory(log_dir, excel_file):
     plot_tegrastats_box(log_dir, excel_file)
     plot_workload_box(log_dir, excel_file)
     plot_gpu_timeseries(log_dir, excel_file)
+    plot_gpu_violin(log_dir, excel_file)
     plot_power_timeseries(log_dir, excel_file)
+    plot_incremental_power_timeseries(log_dir, excel_file)
 
 
 if __name__ == "__main__":
-    for config in PLOT_CONFIGS:
-        plot_log_directory(
-            config["log_dir"],
-            config["excel_file"]
-        )
+    print("========================================")
+    print(" Plot 대상 선택")
+    print("========================================")
+    print("1. Concurrent (all_logs)")
+    print("2. Isolated (isolated_logs)")
+
+    choice = input("선택 (1/2): ").strip()
+
+    if choice == "1":
+        config = PLOT_CONFIGS[0]
+    elif choice == "2":
+        config = PLOT_CONFIGS[1]
+    else:
+        print("[ERROR] 1 또는 2를 입력하세요.")
+        raise SystemExit(1)
+
+    plot_log_directory(
+        config["log_dir"],
+        config["excel_file"]
+    )
