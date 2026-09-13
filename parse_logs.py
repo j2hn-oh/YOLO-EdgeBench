@@ -20,6 +20,330 @@ LOG_CONFIGS = [
 ]
 
 
+
+def parse_experiment_config(writer, log_dir):
+    """
+    experiment_config.log와 tegrastats를 이용해 실험 설정을
+    사람이 보기 쉬운 Experiment_Config 시트로 저장한다.
+
+    - Power mode: experiment_config.log의 nvpmodel -q에서 직접 읽음
+    - MPS: experiment_config.log에 기록된 MPS process 유무로 확인
+    - Clock status: workload 동안 tegrastats의 CPU/GPU/EMC 주파수 변동으로 판단
+    """
+
+    config_file = log_dir / "experiment_config.log"
+
+    if not config_file.exists():
+        print("[INFO] experiment_config.log 없음 - Experiment_Config 시트 생략")
+        return
+
+    config_text = config_file.read_text(errors="replace")
+
+    # ---------------------------------------------------------
+    # experiment_config.log 파싱
+    # ---------------------------------------------------------
+
+    def get_section(name):
+        pattern = re.compile(
+            rf"\[{re.escape(name)}\]\s*\n(.*?)(?=\n\[[^\]]+\]|\n=+\s*$|\Z)",
+            re.S
+        )
+        match = pattern.search(config_text)
+        return match.group(1).strip() if match else ""
+
+    timestamp = get_section("Timestamp")
+    hostname = get_section("Hostname")
+    nvpmodel_text = get_section("nvpmodel -q")
+    jetson_clocks_text = get_section("jetson_clocks --show")
+    online_cpus = get_section("Online CPUs")
+    present_cpus = get_section("Present CPUs")
+    mps_status = get_section("MPS Status")
+
+    if not mps_status:
+        mps_status = "Unknown"
+
+    power_mode = ""
+    mode_id = ""
+
+    mode_match = re.search(
+        r"NV Power Mode:\s*(.+)",
+        nvpmodel_text
+    )
+
+    if mode_match:
+        power_mode = mode_match.group(1).strip()
+
+        # NV Power Mode 다음 줄의 숫자를 mode ID로 사용
+        after_mode = nvpmodel_text[mode_match.end():].strip().splitlines()
+
+        for line in after_mode:
+            line = line.strip()
+
+            if re.fullmatch(r"\d+", line):
+                mode_id = line
+                break
+
+    # ---------------------------------------------------------
+    # workload tegrastats 파일 선택
+    # ---------------------------------------------------------
+
+    all_tegrastat = log_dir / "all_tegrastat.log"
+
+    if all_tegrastat.exists():
+        tegra_files = [all_tegrastat]
+    else:
+        tegra_files = sorted(
+            log_dir.glob("tegrastat_*_r*.log")
+        )
+
+    # tegrastats frequency parser
+    cpu_pattern = re.compile(r"CPU \[(.*?)\]")
+    gpu_pattern = re.compile(
+        r"GR3D(?:_FREQ)?\s+\d+%@(?:\[(\d+)(?:,\d+)?\]|(\d+))"
+    )
+    emc_pattern = re.compile(r"EMC_FREQ\s+\d+%@(\d+)")
+
+    cpu_freqs = {}
+    gpu_freqs = []
+    emc_freqs = []
+    online_core_counts = []
+
+    for filepath in tegra_files:
+
+        with open(filepath, "r", errors="replace") as f:
+
+            for line in f:
+
+                # CPU
+                cpu_match = cpu_pattern.search(line)
+
+                if cpu_match:
+
+                    cores = [
+                        core.strip()
+                        for core in cpu_match.group(1).split(",")
+                    ]
+
+                    online_count = 0
+
+                    for idx, core in enumerate(cores):
+
+                        if core.lower() == "off":
+                            continue
+
+                        freq_match = re.search(
+                            r"\d+%@(\d+)",
+                            core
+                        )
+
+                        if freq_match:
+                            online_count += 1
+
+                            cpu_freqs.setdefault(
+                                idx,
+                                []
+                            ).append(
+                                int(freq_match.group(1))
+                            )
+
+                    online_core_counts.append(
+                        online_count
+                    )
+
+                # GPU
+                gpu_match = gpu_pattern.search(line)
+
+                if gpu_match:
+
+                    freq = (
+                        gpu_match.group(1)
+                        if gpu_match.group(1) is not None
+                        else gpu_match.group(2)
+                    )
+
+                    gpu_freqs.append(int(freq))
+
+                # EMC
+                emc_match = emc_pattern.search(line)
+
+                if emc_match:
+                    emc_freqs.append(
+                        int(emc_match.group(1))
+                    )
+
+    # ---------------------------------------------------------
+    # Clock 변동 요약
+    # ---------------------------------------------------------
+
+    # tegrastats의 몇 MHz 수준 반올림/측정 차이는 고정 상태로 취급
+    CPU_TOLERANCE_MHZ = 20
+    GPU_TOLERANCE_MHZ = 20
+    EMC_TOLERANCE_MHZ = 20
+
+    cpu_ranges = {}
+
+    for core, values in cpu_freqs.items():
+
+        if values:
+            cpu_ranges[core] = (
+                min(values),
+                max(values)
+            )
+
+    cpu_fixed = bool(cpu_ranges) and all(
+        (max_freq - min_freq) <= CPU_TOLERANCE_MHZ
+        for min_freq, max_freq in cpu_ranges.values()
+    )
+
+    gpu_min = min(gpu_freqs) if gpu_freqs else None
+    gpu_max = max(gpu_freqs) if gpu_freqs else None
+
+    gpu_fixed = (
+        gpu_min is not None
+        and gpu_max is not None
+        and (gpu_max - gpu_min) <= GPU_TOLERANCE_MHZ
+    )
+
+    emc_min = min(emc_freqs) if emc_freqs else None
+    emc_max = max(emc_freqs) if emc_freqs else None
+
+    emc_fixed = (
+        emc_min is not None
+        and emc_max is not None
+        and (emc_max - emc_min) <= EMC_TOLERANCE_MHZ
+    )
+
+    # CPU와 GPU를 핵심 기준으로 사용.
+    # EMC 데이터가 존재하면 EMC도 함께 고정되어야 Fixed로 판정.
+    if cpu_ranges and gpu_freqs:
+
+        clock_fixed = (
+            cpu_fixed
+            and gpu_fixed
+            and (
+                emc_fixed
+                if emc_freqs
+                else True
+            )
+        )
+
+        clock_status = (
+            "Fixed"
+            if clock_fixed
+            else "Not Fixed"
+        )
+
+    else:
+        clock_status = "Unknown"
+
+    # ---------------------------------------------------------
+    # 사람이 보기 쉬운 문자열 생성
+    # ---------------------------------------------------------
+
+    if online_core_counts:
+        online_min = min(online_core_counts)
+        online_max = max(online_core_counts)
+
+        online_observed = (
+            str(online_min)
+            if online_min == online_max
+            else f"{online_min}-{online_max}"
+        )
+
+    else:
+        online_observed = ""
+
+    cpu_min_all = (
+        min(
+            min_freq
+            for min_freq, _ in cpu_ranges.values()
+        )
+        if cpu_ranges
+        else None
+    )
+
+    cpu_max_all = (
+        max(
+            max_freq
+            for _, max_freq in cpu_ranges.values()
+        )
+        if cpu_ranges
+        else None
+    )
+
+    cpu_range_text = (
+        f"{cpu_min_all}-{cpu_max_all} MHz"
+        if cpu_min_all is not None
+        else ""
+    )
+
+    gpu_range_text = (
+        f"{gpu_min}-{gpu_max} MHz"
+        if gpu_min is not None
+        else ""
+    )
+
+    emc_range_text = (
+        f"{emc_min}-{emc_max} MHz"
+        if emc_min is not None
+        else ""
+    )
+
+    cpu_core_detail = ", ".join(
+        (
+            f"CPU{core}: {low} MHz"
+            if low == high
+            else f"CPU{core}: {low}-{high} MHz"
+        )
+        for core, (low, high)
+        in sorted(cpu_ranges.items())
+    )
+
+    tegra_file_text = ", ".join(
+        path.name
+        for path in tegra_files
+    )
+
+    # ---------------------------------------------------------
+    # Excel 시트 저장
+    # ---------------------------------------------------------
+
+    rows = [
+        ["Experiment Time", timestamp],
+        ["Hostname", hostname],
+        ["Power Mode", power_mode],
+        ["Power Mode ID", mode_id],
+        ["Online CPUs (configured)", online_cpus],
+        ["Present CPUs", present_cpus],
+        ["Online CPU Cores (observed)", online_observed],
+        ["MPS", mps_status],
+        ["CPU Clock Range", cpu_range_text],
+        ["GPU Clock Range", gpu_range_text],
+        ["EMC Clock Range", emc_range_text],
+        ["Clock Status", clock_status],
+        ["CPU Clock Detail", cpu_core_detail],
+        ["Tegrastats Files", tegra_file_text],
+    ]
+
+    df_config = pd.DataFrame(
+        rows,
+        columns=["Item", "Value"]
+    )
+
+    df_config.to_excel(
+        writer,
+        sheet_name="Experiment_Config",
+        index=False
+    )
+
+    print(
+        f"Experiment_Config 저장 완료 "
+        f"(Power Mode={power_mode or 'Unknown'}, "
+        f"MPS={mps_status}, "
+        f"Clock={clock_status})"
+    )
+
+
 def parse_inference_logs(writer, log_dir):
     """ 이미지별 preprocess/inference/postprocess/total 시간 추출 및 엑셀 시트 추가 """
 
@@ -463,6 +787,7 @@ def parse_log_directory(log_dir, excel_name):
     print(f"\nParsing: {log_dir}")
 
     with pd.ExcelWriter(excel_out, engine="openpyxl") as writer:
+        parse_experiment_config(writer, log_dir)
         parse_inference_logs(writer, log_dir)
         parse_tegrastats_logs(writer, log_dir)
         parse_pidstat_logs(writer, log_dir)

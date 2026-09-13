@@ -38,6 +38,60 @@ WORKLOADS=(
     obb
 )
 
+
+save_experiment_config()
+{
+    local CONFIG_LOG="$LOG_DIR/experiment_config.log"
+
+    rm -f "$CONFIG_LOG"
+
+    {
+        echo "============================================================"
+        echo "Experiment Configuration"
+        echo "============================================================"
+
+        echo
+        echo "[Timestamp]"
+        date '+%Y-%m-%d %H:%M:%S %Z'
+
+        echo
+        echo "[Hostname]"
+        hostname
+
+        echo
+        echo "[nvpmodel -q]"
+        sudo nvpmodel -q 2>&1 || true
+
+        echo
+        echo "[jetson_clocks --show]"
+        sudo jetson_clocks --show 2>&1 || true
+
+        echo
+        echo "[Online CPUs]"
+        cat /sys/devices/system/cpu/online 2>&1 || true
+
+        echo
+        echo "[Present CPUs]"
+        cat /sys/devices/system/cpu/present 2>&1 || true
+
+        echo
+        echo "[MPS Status]"
+
+        if pgrep -f '[n]vidia-cuda-mps-control|[n]vidia-cuda-mps-server' \
+            >/dev/null 2>&1; then
+            echo "ON"
+        else
+            echo "OFF"
+        fi
+
+        echo
+        echo "============================================================"
+    } > "$CONFIG_LOG"
+
+    echo "[INFO] Experiment configuration saved:"
+    echo "$CONFIG_LOG"
+}
+
 check_mps_off()
 {
     echo "============================================================"
@@ -105,9 +159,13 @@ for NAME in "${WORKLOADS[@]}"; do
 done
 
 rm -f "$LOG_DIR/all_tegrastat.log"
+rm -f "$LOG_DIR/experiment_config.log"
 
 rm -rf "$LOG_DIR/nsys"
 mkdir -p "$LOG_DIR/nsys"
+
+# 실험 시작 직전 power mode / clock / CPU / MPS 상태 저장
+save_experiment_config
 
 CURRENT_CONTAINER=""
 PIDSTAT_PID=""
